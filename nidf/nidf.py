@@ -46,7 +46,10 @@ class Nidf:
         self.check_zips = check_zips
         self.name_re, self._type = name, _type
         await self.paths_queue.put(root)
-        cpus = len(os.sched_getaffinity(0))
+        try:
+            cpus = len(os.sched_getaffinity(0))
+        except AttributeError:
+            cpus = os.cpu_count()
         cpus = cpus - 1 if cpus > 1 else 1
         async with curio.TaskGroup() as producers:
             await producers.spawn(self.delayed_producers, producers)
