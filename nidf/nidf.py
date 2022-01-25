@@ -136,9 +136,10 @@ class Nidf:
                         return item
         else:
             if self.check_hash:
-                f_hash = await curio.run_in_process(generate_hash, item.path)
-                if f_hash == self.master_hash:
-                    return item
+                if item.is_file():
+                    f_hash = await curio.run_in_process(generate_hash, item.path)
+                    if f_hash == self.master_hash:
+                        return item
             elif re.match(self.name_re, item.name):
                 return item
 
@@ -205,9 +206,10 @@ def search_zipfile(zip_name, name_re, check_hash, master_hash):
     p = zipfile.Path(zip_name)
     for item in _iter_zip(''):
         if check_hash:
-            f_hash = generate_hash(item, is_zip=True)
-            if f_hash == master_hash:
-               results.append(str(p.joinpath(item.name)))
+            if item.is_file():
+                f_hash = generate_hash(item, is_zip=True)
+                if f_hash == master_hash:
+                   results.append(str(p.joinpath(item.name)))
         else:
             if re.match(name_re, item.name):
                results.append(str(p.joinpath(item.name)))
