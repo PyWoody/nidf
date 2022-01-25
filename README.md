@@ -2,4 +2,4 @@ Simple, striped down `find` replacement for use on NAS or slow disk drives. Resu
 
 The "-z/--zips" flag will allow you to search inside zip-like objects.
 
-The "--hash" option accepts an absolute filepath to generate a has to search.
+The "--hash" option accepts an absolute filepath to generate a hash to search against.
