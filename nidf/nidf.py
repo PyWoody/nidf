@@ -12,7 +12,10 @@ __all__ = ['Nidf', 'generate_hash', 'search_zipfile']
 
 class Nidf:
 
-    def __init__(self):
+    def __init__(self, callback=None):
+        if callback is None:
+            callback = async_print
+        self.callback = callback
         self.items_queue = curio.Queue()
         self.paths_queue = curio.Queue()
         self.check_hash, self.check_zips, self.ignore_errors = False, False, False
@@ -107,11 +110,11 @@ class Nidf:
                     search_zipfile, item.path, self.name_re, self.check_hash, self.master_hash
                 )
                 for result in results:
-                    print(result)
+                    await self.callback(result)
             else:
                 is_match = await self.match(item)
                 if is_match:
-                    print(item.path)
+                    await self.callback(item.path)
             await self.items_queue.task_done()
 
     async def match(self, item):
@@ -218,6 +221,9 @@ def search_zipfile(zip_name, name_re, check_hash, master_hash):
 def clean_re_chars(name):
     # TODO: Make this handle the full gambit of re special chars
     return '^' + name.replace('.', '\.').replace('*', '.*') + "$"
+
+async def async_print(arg):
+    print(arg)
 
 async def main():
     import argparse, textwrap
