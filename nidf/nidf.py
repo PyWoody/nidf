@@ -55,7 +55,6 @@ class Nidf:
             cpus = os.cpu_count()
         cpus = cpus - 1 if cpus > 1 else 1
         async with curio.TaskGroup() as producers:
-            await producers.spawn(self.delayed_producers, producers)
             for _ in range(10):
                 await producers.spawn(self.crawler)
             if _hash:
@@ -63,6 +62,7 @@ class Nidf:
             async with curio.TaskGroup() as consumers:
                 for _ in range(cpus):
                     await consumers.spawn(self.search)
+                await producers.spawn(self.delayed_producers, producers)
                 await self.paths_queue.join()
                 await producers.cancel_remaining()
                 await self.items_queue.join()
@@ -158,12 +158,12 @@ class Nidf:
             sleep (kwarg): The amount to wait between each cycle
             max_workers (kwarg): Maximum number of workers to create
         """
-        worker_count = 0
+        worker_count, worker_batch = 0, 100
         while worker_count <= max_workers - 100:
-            for _ in range(100):
-                worker_count += 1
+            for _ in range(worker_batch):
                 # These are daemons to prevent hangs while queues are joined
                 await group.spawn(self.crawler, daemon=True)
+            worker_count += worker_batch
             await curio.sleep(sleep)
 
 
