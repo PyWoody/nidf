@@ -18,25 +18,28 @@ class Nidf:
         self.callback = callback
         self.items_queue = curio.Queue()
         self.paths_queue = curio.Queue()
-        self.check_hash, self.check_zips, self.ignore_errors = False, False, False
+        self.check_hash = False
+        self.check_zips = False
+        self.ignore_errors = False
         self.name_re, self._type = None, None
         self.master_hash = None
 
     async def __call__(
-            self,
-            root,
-            *,
-            name=None,
-            _type=None,
-            _hash=False,
-            check_zips=False,
-            ignore_errors=False,
-        ):
+                self,
+                root,
+                *,
+                name=None,
+                _type=None,
+                _hash=False,
+                check_zips=False,
+                ignore_errors=False,
+            ):
         """
         An asyncrounus search file and/or directory search.
 
         Required:
-            root (arg): a pathlike object for root. This is the initial starting point.
+            root (arg): a pathlike object for root.
+            This is the initial starting point.
         Optional:
             name (kwarg): Regular expression to be used for matching
             _type (kwarg): "f" for file; "d" for directory
@@ -53,10 +56,8 @@ class Nidf:
             cpus = len(os.sched_getaffinity(0))
         except AttributeError:
             cpus = os.cpu_count()
-        cpus = cpus - 1 if cpus > 1 else 1
         async with curio.TaskGroup() as producers:
-            for _ in range(10):
-                await producers.spawn(self.crawler)
+            await producers.spawn(self.crawler)
             if _hash:
                 self.master_hash = generate_hash(name)
             async with curio.TaskGroup() as consumers:
@@ -107,7 +108,11 @@ class Nidf:
             item = await self.items_queue.get()
             if self.check_zips and zipfile.is_zipfile(item.path):
                 results = await curio.run_in_process(
-                    search_zipfile, item.path, self.name_re, self.check_hash, self.master_hash
+                    search_zipfile,
+                    item.path,
+                    self.name_re,
+                    self.check_hash,
+                    self.master_hash
                 )
                 for result in results:
                     await self.callback(result)
@@ -131,7 +136,9 @@ class Nidf:
         elif self._type == 'f':
             if item.is_file():
                 if self.check_hash:
-                    f_hash = await curio.run_in_process(generate_hash, item.path)
+                    f_hash = await curio.run_in_process(
+                        generate_hash, item.path
+                    )
                     if f_hash == self.master_hash:
                         return item
                 else:
@@ -140,7 +147,9 @@ class Nidf:
         else:
             if self.check_hash:
                 if item.is_file():
-                    f_hash = await curio.run_in_process(generate_hash, item.path)
+                    f_hash = await curio.run_in_process(
+                        generate_hash, item.path
+                    )
                     if f_hash == self.master_hash:
                         return item
             elif re.match(self.name_re, item.name):
@@ -188,6 +197,7 @@ def generate_hash(path, is_zip=False):
                 f_hash.update(chunk)
     return f_hash.digest()
 
+
 def search_zipfile(zip_name, name_re, check_hash, master_hash):
     """
     Returns a list of matched items
@@ -199,6 +209,7 @@ def search_zipfile(zip_name, name_re, check_hash, master_hash):
         mster_hash (arg): The hash to check further files against
     """
     results = []
+
     def _iter_zip(path):
         _p = p.joinpath(path)
         for i in _p.iterdir():
@@ -212,30 +223,34 @@ def search_zipfile(zip_name, name_re, check_hash, master_hash):
             if item.is_file():
                 f_hash = generate_hash(item, is_zip=True)
                 if f_hash == master_hash:
-                   results.append(str(p.joinpath(item.name)))
+                    results.append(str(p.joinpath(item.name)))
         else:
             if re.match(name_re, item.name):
-               results.append(str(p.joinpath(item.name)))
+                results.append(str(p.joinpath(item.name)))
     return results
+
 
 def clean_re_chars(name):
     # TODO: Make this handle the full gambit of re special chars
     return '^' + name.replace('.', '\.').replace('*', '.*') + "$"
 
+
 async def async_print(arg):
     print(arg)
 
+
 async def main():
-    import argparse, textwrap
+    import argparse
+    import textwrap
 
     parser = argparse.ArgumentParser(
         formatter_class=argparse.RawTextHelpFormatter,
-        description=textwrap.dedent('''\
-Simple, striped down `find` replacement for use on NAS or slow disk drives. Results may be faster than `find` on SSDs for deep but not shallow searches. 
-        \nThe "-z/--zips" flag will allow you to search inside zip-like objects.
-        \nThe "--hash" option accepts an absolute filepath to generate a has to search.
-        '''
-        )
+        description=textwrap.dedent('''
+Simple, striped down `find` replacement for use on NAS or slow disk drives.
+Results may be faster than `find` on SSDs for deep but not shallow searches.
+\nThe "-z/--zips" flag will allow you to search inside zip-like objects.
+\nThe "--hash" option accepts an absolute filepath to generate a has to search.
+        ''')
     )
     parser.add_argument(
             'path',
@@ -298,4 +313,3 @@ Simple, striped down `find` replacement for use on NAS or slow disk drives. Resu
 
 if __name__ == '__main__':
     curio.run(main)
-
