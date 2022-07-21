@@ -1,4 +1,5 @@
 import curio
 from .nidf import main
 
-curio.run(main)
+with curio.Kernel() as kernel:
+    kernel.run(main, shutdown=True)

@@ -63,7 +63,8 @@ class Nidf:
             async with curio.TaskGroup() as consumers:
                 for _ in range(cpus):
                     await consumers.spawn(self.search)
-                await producers.spawn(self.delayed_producers, producers)
+                for _ in range(cpus * 10):
+                    await producers.spawn(self.crawler)
                 await self.paths_queue.join()
                 await producers.cancel_remaining()
                 await self.items_queue.join()
@@ -79,7 +80,8 @@ class Nidf:
         try:
             with os.scandir(root) as scanner:
                 for entry in scanner:
-                    if entry.is_dir():
+                    is_dir = await check_if_dir(entry)
+                    if is_dir:
                         await self.paths_queue.put(entry.path)
                     await self.items_queue.put(entry)
         except OSError as e:
@@ -122,79 +124,68 @@ class Nidf:
                     await self.callback(item.path)
             await self.items_queue.task_done()
 
-    async def match(self, item):
+    async def match(self, entry):
         """
-        Checks PathLike item against specified filters. Returns item if match
+        Checks PathLike entry against specified filters. Returns entry if match
         is found; else, None.
 
         Required:
-            item (arg): PathLike object to test against
+            entry (arg): PathLike object to test against
         """
         if self._type == 'd':
-            if item.is_dir() and re.match(self.name_re, item.name):
-                return item
+            is_dir = await check_if_dir(entry)
+            if is_dir and re.match(self.name_re, entry.name):
+                return entry
         elif self._type == 'f':
-            if item.is_file():
+            is_file = await check_if_file(entry)
+            if is_file:
                 if self.check_hash:
                     f_hash = await curio.run_in_process(
-                        generate_hash, item.path
+                        generate_hash, entry.path
                     )
                     if f_hash == self.master_hash:
-                        return item
+                        return entry
                 else:
-                    if re.match(self.name_re, item.name):
-                        return item
+                    if re.match(self.name_re, entry.name):
+                        return entry
         else:
             if self.check_hash:
-                if item.is_file():
+                is_file = await check_if_file(entry)
+                if is_file:
                     f_hash = await curio.run_in_process(
-                        generate_hash, item.path
+                        generate_hash, entry.path
                     )
                     if f_hash == self.master_hash:
-                        return item
-            elif re.match(self.name_re, item.name):
-                return item
-
-    async def delayed_producers(self, group, sleep=.25, max_workers=1_000):
-        """
-        Produces additional consumers for the specified group every
-        so may seconds as specified by sleep.
-        Default number of max workers is 1_000
-
-        Required:
-            group (arg): The already created TaskGroup to attach the spawn to
-        Optional:
-            sleep (kwarg): The amount to wait between each cycle
-            max_workers (kwarg): Maximum number of workers to create
-        """
-        worker_count, worker_batch = 0, 100
-        while worker_count <= max_workers - 100:
-            for _ in range(worker_batch):
-                # These are daemons to prevent hangs while queues are joined
-                await group.spawn(self.crawler, daemon=True)
-            worker_count += worker_batch
-            await curio.sleep(sleep)
+                        return entry
+            elif re.match(self.name_re, entry.name):
+                return entry
 
 
-def generate_hash(path, is_zip=False):
+def generate_hash(path):
     """
     Generates an MD5 hash for the specified file
 
     Required:
         path (arg): A filepath or a PathLike object
-    Optional:
-        is_zip (kwarg): A Boolean for sending PathLike objects from ZIPs
     """
-    if is_zip:
-        with path.open('rb') as f:
-            f_hash = hashlib.md5()
-            while chunk := f.read(8192):
-                f_hash.update(chunk)
-    else:
-        with open(path, 'rb') as f:
-            f_hash = hashlib.md5()
-            while chunk := f.read(8192):
-                f_hash.update(chunk)
+    with open(path, 'rb') as f:
+        f_hash = hashlib.md5()
+        while chunk := f.read(8192):
+            f_hash.update(chunk)
+    return f_hash.digest()
+
+
+def generate_zip_hash(path):
+    """
+    Generates an MD5 hash for the specified file
+
+    Required:
+        path (arg): A filepath or a PathLike object from a ZIP
+    """
+    with path.open('rb') as f:
+        f_hash = hashlib.md5()
+        while chunk := f.read(8192):
+            f_hash.update(chunk)
     return f_hash.digest()
 
 
@@ -209,34 +200,42 @@ def search_zipfile(zip_name, name_re, check_hash, master_hash):
         mster_hash (arg): The hash to check further files against
     """
     results = []
-
-    def _iter_zip(path):
-        _p = p.joinpath(path)
-        for i in _p.iterdir():
-            if i.is_dir():
-                yield from _iter_zip(i.at)  # ".at" is undocumented :/
-            yield i
-
-    p = zipfile.Path(zip_name)
-    for item in _iter_zip(''):
+    zip_obj = zipfile.Path(zip_name)
+    for item in iter_zip(zip_obj):
         if check_hash:
             if item.is_file():
-                f_hash = generate_hash(item, is_zip=True)
+                f_hash = generate_zip_hash(item)
                 if f_hash == master_hash:
-                    results.append(str(p.joinpath(item.name)))
+                    results.append(str(zip_obj.joinpath(item.name)))
         else:
             if re.match(name_re, item.name):
-                results.append(str(p.joinpath(item.name)))
+                results.append(str(zip_obj.joinpath(item.name)))
     return results
 
 
-def clean_re_chars(name):
-    # TODO: Make this handle the full gambit of re special chars
-    return '^' + name.replace('.', '\.').replace('*', '.*') + "$"
+def iter_zip(zip_obj, path=''):
+    p = zip_obj.joinpath(path)
+    for i in p.iterdir():
+        if i.is_dir():
+            yield from iter_zip(zip_obj, i.at)  # ".at" is undocumented
+        yield i
+
+
+async def check_if_file(entry):
+    return entry.is_file()
+
+
+async def check_if_dir(entry):
+    return entry.is_dir()
 
 
 async def async_print(arg):
     print(arg)
+
+
+def clean_re_chars(name):
+    # TODO: Make this handle the full gambit of re special chars
+    return '^' + name.replace('.', '\\.').replace('*', '.*') + "$"
 
 
 async def main():
@@ -312,4 +311,5 @@ Results may be faster than `find` on SSDs for deep but not shallow searches.
 
 
 if __name__ == '__main__':
-    curio.run(main)
+    with curio.Kernel() as kernel:
+        kernel.run(main, shutdown=True)
