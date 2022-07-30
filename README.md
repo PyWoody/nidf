@@ -13,7 +13,7 @@ py -m nidf /starting/path --hash /path/to/file.txt -z
 
 will search starting for hash matches for `/path/to/file.txt` starting from `/starting/path` as well as in any zip-like objects.
 
-Zip-like objects include `.zip`, `.docx`, `.pptx`, `.xlsxl`, `.epub`, and more!
+Zip-like objects include `.zip`, `.docx`, `.pptx`, `.xlsx`, `.epub`, and more!
 
 NOTE: It is important to recognize caches. If you are going to do any tests directly against `find`, I suggest running them multiple times to make sure they each can benefit from the cache.
 
