@@ -108,7 +108,7 @@ class Nidf:
         """
         while True:
             item = await self.paths_queue.get()
-            crawl_task = await self.scan(item)
+            await self.scan(item)
             await self.paths_queue.task_done()
 
     async def search(self):
