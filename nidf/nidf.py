@@ -18,10 +18,12 @@ class Nidf:
         self.callback = callback
         self.items_queue = curio.Queue()
         self.paths_queue = curio.Queue()
+        self.zip_paths_queue = curio.Queue()
         self.check_hash = False
         self.check_zips = False
         self.ignore_errors = False
-        self.name_re, self._type = None, None
+        self.name_re = None
+        self._type = None
         self.master_hash = None
 
     async def __call__(
@@ -47,10 +49,11 @@ class Nidf:
             check_zips (kwarg): If True, archives will be searched, too
             ignore_errors (kwarg): Suppress OSErrors. Default is False
         """
-        self.ignore_errors = ignore_errors
+        self.ignore_errors = bool(ignore_errors)
         self.check_hash = True if _hash else False
-        self.check_zips = check_zips
-        self.name_re, self._type = name, _type
+        self.check_zips = bool(check_zips)
+        self.name_re = name
+        self._type =  _type
         await self.paths_queue.put(root)
         try:
             cpus = len(os.sched_getaffinity(0))
@@ -61,13 +64,18 @@ class Nidf:
             if _hash:
                 self.master_hash = generate_hash(name)
             async with curio.TaskGroup() as consumers:
-                for _ in range(cpus):
+                if self.check_zips:
+                    for _ in range(cpus):
+                        await consumers.spawn(self.search_zips)
+                for _ in range(cpus * 5):
                     await consumers.spawn(self.search)
                 for _ in range(cpus * 10):
                     await producers.spawn(self.crawler)
                 await self.paths_queue.join()
                 await producers.cancel_remaining()
                 await self.items_queue.join()
+                if self.check_zips:
+                    await self.zip_paths_queue.join()
                 await consumers.cancel_remaining()
 
     async def scan(self, root):
@@ -83,6 +91,10 @@ class Nidf:
                     is_dir = await check_if_dir(entry)
                     if is_dir:
                         await self.paths_queue.put(entry.path)
+                    if self.check_zips:
+                        is_zip = await check_if_zip(entry)
+                        if is_zip:
+                            await self.zip_paths_queue.put(entry)
                     await self.items_queue.put(entry)
         except OSError as e:
             if not self.ignore_errors:
@@ -96,8 +108,7 @@ class Nidf:
         """
         while True:
             item = await self.paths_queue.get()
-            crawl_task = await curio.spawn(self.scan, item)
-            await crawl_task.join()
+            crawl_task = await self.scan(item)
             await self.paths_queue.task_done()
 
     async def search(self):
@@ -108,21 +119,29 @@ class Nidf:
         """
         while True:
             item = await self.items_queue.get()
-            if self.check_zips and zipfile.is_zipfile(item.path):
-                results = await curio.run_in_process(
-                    search_zipfile,
-                    item.path,
-                    self.name_re,
-                    self.check_hash,
-                    self.master_hash
-                )
-                for result in results:
-                    await self.callback(result)
-            else:
-                is_match = await self.match(item)
-                if is_match:
-                    await self.callback(item.path)
+            is_match = await self.match(item)
+            if is_match:
+                await self.callback(item.path)
             await self.items_queue.task_done()
+
+    async def search_zips(self):
+        """
+        Consumer for self.zip_paths_queue.
+
+        Should not be interacted with directly.
+        """
+        while True:
+            item = await self.zip_paths_queue.get()
+            results = await curio.run_in_process(
+                search_zipfile,
+                item.path,
+                self.name_re,
+                self.check_hash,
+                self.master_hash,
+            )
+            for result in results:
+                await self.callback(result)
+            await self.zip_paths_queue.task_done()
 
     async def match(self, entry):
         """
@@ -229,8 +248,12 @@ async def check_if_dir(entry):
     return entry.is_dir()
 
 
-async def async_print(arg):
-    print(arg)
+async def check_if_zip(entry):
+    return zipfile.is_zipfile(entry.path)
+
+
+async def async_print(*args, **kwargs):
+    print(*args, **kwargs)
 
 
 def clean_re_chars(name):
