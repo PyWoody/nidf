@@ -25,6 +25,7 @@ class Nidf:
         self.name_re = None
         self._type = None
         self.master_hash = None
+        self.__cancelled = False
 
     async def __call__(
                 self,
@@ -53,7 +54,7 @@ class Nidf:
         self.check_hash = True if _hash else False
         self.check_zips = bool(check_zips)
         self.name_re = name
-        self._type =  _type
+        self._type = _type
         await self.paths_queue.put(root)
         try:
             cpus = len(os.sched_getaffinity(0))
@@ -71,12 +72,17 @@ class Nidf:
                     await consumers.spawn(self.search)
                 for _ in range(cpus * 10):
                     await producers.spawn(self.crawler)
-                await self.paths_queue.join()
-                await producers.cancel_remaining()
-                await self.items_queue.join()
-                if self.check_zips:
-                    await self.zip_paths_queue.join()
-                await consumers.cancel_remaining()
+                try:
+                    await self.paths_queue.join()
+                    await producers.cancel_remaining()
+                    await self.items_queue.join()
+                    if self.check_zips:
+                        await self.zip_paths_queue.join()
+                    await consumers.cancel_remaining()
+                except (KeyboardInterrupt, Exception):
+                    self.__cancelled = True
+                    await producers.cancel_remaining()
+                    await consumers.cancel_remaining()
 
     async def scan(self, root):
         """
@@ -91,7 +97,7 @@ class Nidf:
                     is_dir = await check_if_dir(entry)
                     if is_dir:
                         await self.paths_queue.put(entry.path)
-                    if self.check_zips:
+                    elif self.check_zips:
                         is_zip = await check_if_zip(entry)
                         if is_zip:
                             await self.zip_paths_queue.put(entry)
@@ -99,6 +105,9 @@ class Nidf:
         except OSError as e:
             if not self.ignore_errors:
                 print(e)
+        except (KeyboardInterrupt, Exception):
+            self.__cancelled = True
+            return
 
     async def crawler(self):
         """
@@ -106,10 +115,23 @@ class Nidf:
 
         Should not be interacted with directly.
         """
-        while True:
-            item = await self.paths_queue.get()
-            await self.scan(item)
-            await self.paths_queue.task_done()
+        while not self.__cancelled:
+            item = None
+            crawl_task = None
+            try:
+                item = await self.paths_queue.get()
+                crawl_task = await curio.spawn(self.scan, item)
+                await crawl_task.wait()
+            except (KeyboardInterrupt, Exception):
+                self.__cancelled = True
+                if crawl_task is not None:
+                    await crawl_task.cancel()
+                return
+            finally:
+                if crawl_task is not None:
+                    await crawl_task.join()
+                if item is not None:
+                    await self.paths_queue.task_done()
 
     async def search(self):
         """
@@ -117,12 +139,19 @@ class Nidf:
 
         Should not be interacted with directly.
         """
-        while True:
-            item = await self.items_queue.get()
-            is_match = await self.match(item)
-            if is_match:
-                await self.callback(item.path)
-            await self.items_queue.task_done()
+        while not self.__cancelled:
+            item = None
+            try:
+                item = await self.items_queue.get()
+                is_match = await self.match(item)
+                if is_match:
+                    await self.callback(item.path)
+            except (KeyboardInterrupt, Exception):
+                self.__cancelled = True
+                return
+            finally:
+                if item is not None:
+                    await self.items_queue.task_done()
 
     async def search_zips(self):
         """
@@ -153,7 +182,7 @@ class Nidf:
         """
         if self._type == 'd':
             is_dir = await check_if_dir(entry)
-            if is_dir and re.match(self.name_re, entry.name):
+            if is_dir and self.name_re.match(entry.name):
                 return entry
         elif self._type == 'f':
             is_file = await check_if_file(entry)
@@ -165,7 +194,7 @@ class Nidf:
                     if f_hash == self.master_hash:
                         return entry
                 else:
-                    if re.match(self.name_re, entry.name):
+                    if self.name_re.match(entry.name):
                         return entry
         else:
             if self.check_hash:
@@ -176,7 +205,7 @@ class Nidf:
                     )
                     if f_hash == self.master_hash:
                         return entry
-            elif re.match(self.name_re, entry.name):
+            elif self.name_re.match(entry.name):
                 return entry
 
 
@@ -321,7 +350,7 @@ Results may be faster than `find` on SSDs for deep but not shallow searches.
     elif args.hash:
         name = args.hash
     else:
-        name = re.compile('.*')
+        name = re.compile(r'.*')
     kwargs = {
             'name': name,
             '_type': args.type,
@@ -330,7 +359,10 @@ Results may be faster than `find` on SSDs for deep but not shallow searches.
             '_hash': args.hash,
         }
     find = Nidf()
-    await find(path, **kwargs)
+    try:
+        await find(path, **kwargs)
+    except (KeyboardInterrupt, Exception):
+        pass
 
 
 if __name__ == '__main__':

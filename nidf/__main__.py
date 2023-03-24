@@ -1,5 +1,11 @@
 import curio
 from .nidf import main
 
-with curio.Kernel() as kernel:
-    kernel.run(main, shutdown=True)
+def run():
+    with curio.Kernel() as kernel:
+        try:
+            kernel.run(main, shutdown=True)
+        except (KeyboardInterrupt, Exception):
+            return
+
+run()
